@@ -1,3 +1,4 @@
+import ctypes
 import importlib.util
 import os
 import sys
@@ -6,18 +7,31 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-def _add_nvidia_dll_dirs() -> None:
-    """Make the cuBLAS/cuDNN DLLs from the nvidia-* wheels loadable on Windows.
+# Load order matters: libcublas.so.12 depends on libcublasLt.so.12.
+_LINUX_NVIDIA_LIBS = ("cublas/lib/libcublasLt.so.12", "cublas/lib/libcublas.so.12", "cudnn/lib/libcudnn.so.9")
 
-    The wheels install DLLs under site-packages/nvidia/<lib>/bin, which Windows does
-    not search, so ctranslate2 fails with "cublas64_12.dll is not found".
+
+def _add_nvidia_dll_dirs() -> None:
+    """Make the cuBLAS/cuDNN libraries from the nvidia-* wheels loadable.
+
+    The wheels install them under site-packages/nvidia/<lib>, which neither Windows
+    nor the Linux dynamic loader searches, so ctranslate2 fails with
+    "cublas64_12.dll is not found" or "libcublas.so.12 is not found".
     """
-    if sys.platform != "win32":
+    if sys.platform not in ("win32", "linux"):
         return
     spec = importlib.util.find_spec("nvidia")
     if spec is None or spec.submodule_search_locations is None:
         return
     for root in spec.submodule_search_locations:
+        if sys.platform == "linux":
+            # LD_LIBRARY_PATH is only read at process start, so preload the libraries
+            # globally; ctranslate2's later dlopen by soname then finds them loaded.
+            for lib in _LINUX_NVIDIA_LIBS:
+                lib_path = Path(root) / lib
+                if lib_path.exists():
+                    ctypes.CDLL(str(lib_path), mode=ctypes.RTLD_GLOBAL)
+            continue
         for bin_dir in Path(root).glob("*/bin"):
             os.add_dll_directory(str(bin_dir))
             # ctranslate2 loads cuBLAS lazily with a plain LoadLibrary, which uses PATH.
