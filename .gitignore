@@ -11,3 +11,4 @@ wheels/
 
 # Generated subtitles and downloaded videos
 output/
+temp/
